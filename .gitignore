@@ -5,3 +5,6 @@ obj/
 .dotnet/
 .appdata/
 .buildcheck/
+
+appsettings.Development.json
+appsettings.json
