@@ -21,6 +21,7 @@ public sealed class AiAgentService : IAiAgentService
         You are allowed to call the run_sql tool to fetch additional data.
 
         Rules:
+        *
         * Before reasoning about table structure, use the provided schema snapshot from INFORMATION_SCHEMA.COLUMNS
         * Never assume a table or column exists unless it appears in the schema snapshot or you verify it with run_sql
         * Only generate SELECT queries
@@ -37,6 +38,53 @@ public sealed class AiAgentService : IAiAgentService
         * For INSERT ... SELECT, explain what rows are being inserted, where they come from, what filters and joins are applied, and which computed expressions affect the inserted values
 
         Return a final natural language explanation.
+        """;
+
+    private const string QueryGenerationSystemPrompt = """
+        You are a database query assistant.
+
+        You will be given a natural-language requirement from a user.
+
+        Your job is to produce one SQL statement that satisfies that requirement.
+
+        Rules:
+        * You are allowed to call the run_sql tool to inspect INFORMATION_SCHEMA and existing lookup values
+        * run_sql only supports SELECT statements; never attempt data changes with the tool
+        * Before assuming table or column names, verify them with INFORMATION_SCHEMA.COLUMNS
+        * Never invent table names, column names, or relationships
+        * If the user asks for a data-change query, return the SQL statement but do not execute it
+        * If the user asks for a read/query report, return a SELECT statement
+        * If a human-readable value (like "planning permit") maps to an ID, lookup and resolve that ID first using run_sql
+        * Return only one SQL statement in the final answer
+        * Return SQL only with no markdown and no explanation
+        * If requirements cannot be satisfied, return a single SQL comment starting with -- explaining what is missing
+
+        Return the SQL query only.
+        """;
+
+    private const string QuestionAnsweringSystemPrompt = """
+        You are a database assistant that answers questions by querying the database.
+
+        You will be given a natural-language question from a user about data in the database.
+
+        Your job is to understand the question, query the database as needed, and provide a detailed explanation.
+
+        Rules:
+        * You are allowed to call the run_sql tool to query INFORMATION_SCHEMA and business tables
+        * run_sql only supports SELECT statements; never attempt data changes
+        * Before assuming table or column names, verify them with INFORMATION_SCHEMA.COLUMNS or INFORMATION_SCHEMA.TABLES
+        * Never invent table names, column names, or relationships
+        * Query the database to find the answer to the user's question
+        * If you need to understand relationships, check for foreign keys or naming patterns (columns ending in ID)
+        * Resolve IDs to human-readable values when possible
+        * Provide a comprehensive, detailed answer in plain English
+        * Include relevant data values, counts, or summaries as appropriate
+        * If the question cannot be answered from the database, explain why
+        * IMPORTANT: You have a maximum of 6 tool calls. Plan your queries efficiently.
+        * IMPORTANT: Do not repeat the same or similar queries. If you have already queried a table's schema, use that information.
+        * IMPORTANT: Once you have enough data to answer the question, provide your final answer immediately. Do not continue exploring.
+
+        Return a detailed natural language answer.
         """;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -136,6 +184,138 @@ public sealed class AiAgentService : IAiAgentService
         throw new InvalidOperationException("The Gemini assistant did not finish within the allowed tool-call iterations.");
     }
 
+    public async Task<string> GenerateQueryAsync(string requirement, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            throw new InvalidOperationException("Gemini:ApiKey is not configured.");
+        }
+
+        var contents = BuildQueryGenerationConversation(requirement);
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            using var request = CreateGenerateContentRequest(contents);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Gemini request failed with status {StatusCode}: {Body}", response.StatusCode, content);
+                throw new InvalidOperationException(
+                    $"Gemini request failed with status {(int)response.StatusCode} ({response.StatusCode}). Response: {content}");
+            }
+
+            var assistantReply = ParseAssistantReply(content);
+            contents.Add(assistantReply.ModelContent);
+
+            if (assistantReply.ToolCalls.Count == 0)
+            {
+                var finalQuery = SanitizeExplanation(assistantReply.Text);
+                if (string.IsNullOrWhiteSpace(finalQuery))
+                {
+                    throw new InvalidOperationException("The Gemini response did not include a SQL query.");
+                }
+
+                return finalQuery;
+            }
+
+            foreach (var toolCall in assistantReply.ToolCalls)
+            {
+                var sql = toolCall.FunctionArguments["query"]?.GetValue<string>()
+                    ?? throw new InvalidOperationException("Tool call did not include a query.");
+
+                _logger.LogInformation("AI requested SQL lookup for query-generation: {Sql}", sql);
+
+                var jsonResult = await ExecuteToolQueryAsync(sql, cancellationToken);
+                contents.Add(new JsonObject
+                {
+                    ["role"] = "user",
+                    ["parts"] = new JsonArray(
+                        new JsonObject
+                        {
+                            ["functionResponse"] = new JsonObject
+                            {
+                                ["name"] = toolCall.FunctionName,
+                                ["response"] = new JsonObject
+                                {
+                                    ["result"] = jsonResult
+                                }
+                            }
+                        })
+                });
+            }
+        }
+
+        throw new InvalidOperationException("The Gemini assistant did not finish query generation within the allowed tool-call iterations.");
+    }
+
+    public async Task<string> AskQuestionAsync(string question, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            throw new InvalidOperationException("Gemini:ApiKey is not configured.");
+        }
+
+        var contents = BuildQuestionAnsweringConversation(question);
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            using var request = CreateGenerateContentRequest(contents);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Gemini request failed with status {StatusCode}: {Body}", response.StatusCode, content);
+                throw new InvalidOperationException(
+                    $"Gemini request failed with status {(int)response.StatusCode} ({response.StatusCode}). Response: {content}");
+            }
+
+            var assistantReply = ParseAssistantReply(content);
+            contents.Add(assistantReply.ModelContent);
+
+            if (assistantReply.ToolCalls.Count == 0)
+            {
+                var finalAnswer = SanitizeExplanation(assistantReply.Text);
+                if (string.IsNullOrWhiteSpace(finalAnswer))
+                {
+                    throw new InvalidOperationException("The Gemini response did not include an answer.");
+                }
+
+                return finalAnswer;
+            }
+
+            foreach (var toolCall in assistantReply.ToolCalls)
+            {
+                var sql = toolCall.FunctionArguments["query"]?.GetValue<string>()
+                    ?? throw new InvalidOperationException("Tool call did not include a query.");
+
+                _logger.LogInformation("AI requested SQL lookup for question-answering: {Sql}", sql);
+
+                var jsonResult = await ExecuteToolQueryAsync(sql, cancellationToken);
+                contents.Add(new JsonObject
+                {
+                    ["role"] = "user",
+                    ["parts"] = new JsonArray(
+                        new JsonObject
+                        {
+                            ["functionResponse"] = new JsonObject
+                            {
+                                ["name"] = toolCall.FunctionName,
+                                ["response"] = new JsonObject
+                                {
+                                    ["result"] = jsonResult
+                            }
+                        }
+                    })
+                });
+            }
+        }
+
+        throw new InvalidOperationException("The Gemini assistant did not finish answering within the allowed tool-call iterations.");
+    }
+
     private async Task<JsonNode?> ExecuteToolQueryAsync(string sql, CancellationToken cancellationToken)
     {
         var statements = SqlSafety.SplitSafeSelectStatements(sql);
@@ -220,6 +400,27 @@ public sealed class AiAgentService : IAiAgentService
                     new JsonObject
                     {
                         ["text"] = $"{SystemPrompt}{Environment.NewLine}{Environment.NewLine}{targetSchemaHint}{Environment.NewLine}{Environment.NewLine}{relatedSchemaHint}{Environment.NewLine}{Environment.NewLine}{relationshipHints}{Environment.NewLine}{Environment.NewLine}{parsingHint}"
+                    })
+            }
+        ];
+    }
+
+    private List<JsonObject> BuildQueryGenerationConversation(string requirement)
+    {
+        return
+        [
+            new JsonObject
+            {
+                ["role"] = "user",
+                ["parts"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["text"] = $"""
+                            {QueryGenerationSystemPrompt}
+
+                            User requirement:
+                            {requirement}
+                            """
                     })
             }
         ];
@@ -423,4 +624,25 @@ public sealed class AiAgentService : IAiAgentService
     private sealed record AssistantReply(JsonObject ModelContent, string Text, List<ToolCall> ToolCalls);
 
     private sealed record ToolCall(string FunctionName, JsonObject FunctionArguments);
+
+    private List<JsonObject> BuildQuestionAnsweringConversation(string question)
+    {
+        return
+        [
+            new JsonObject
+        {
+            ["role"] = "user",
+            ["parts"] = new JsonArray(
+                new JsonObject
+                {
+                    ["text"] = $"""
+                        {QuestionAnsweringSystemPrompt}
+
+                        User question:
+                        {question}
+                        """
+                })
+        }
+        ];
+    }
 }

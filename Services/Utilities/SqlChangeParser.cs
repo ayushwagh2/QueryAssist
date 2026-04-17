@@ -13,17 +13,17 @@ public static partial class SqlChangeParser
         }
 
         var trimmed = sql.Trim();
-        if (trimmed.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
-        {
+        //if (trimmed.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
+        //{
             return ParseUpdate(trimmed);
-        }
+        //}
 
-        if (trimmed.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase))
-        {
-            return ParseInsert(trimmed);
-        }
+        //if (trimmed.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase))
+        //{
+        //    return ParseInsert(trimmed);
+        //}
 
-        throw new InvalidOperationException("Only UPDATE and INSERT statements are supported right now.");
+        //throw new InvalidOperationException("Only UPDATE and INSERT statements are supported right now.");
     }
 
     private static ParsedSqlChange ParseUpdate(string sql)

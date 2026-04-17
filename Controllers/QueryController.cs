@@ -11,7 +11,9 @@ public sealed class QueryController : ControllerBase
     private readonly IAiAgentService _aiAgentService;
     private readonly ILogger<QueryController> _logger;
 
-    public QueryController(IAiAgentService aiAgentService, ILogger<QueryController> logger)
+    public QueryController(
+        IAiAgentService aiAgentService,
+        ILogger<QueryController> logger)
     {
         _aiAgentService = aiAgentService;
         _logger = logger;
@@ -24,10 +26,23 @@ public sealed class QueryController : ControllerBase
         return Ok(new
         {
             message = "QueryAssist is running.",
-            endpoint = "POST /analyze-query",
+            endpoints = new[]
+            {
+                "POST /analyze-query",
+                "POST /generate-query",
+                "POST /ask"
+            },
             exampleBody = new
             {
                 query = "UPDATE Application SET ApplicationTypeID = 2 WHERE ApplicationID = 123"
+            },
+            generateExampleBody = new
+            {
+                requirement = "What is the query to change the application type to planning permit?"
+            },
+            askExampleBody = new
+            {
+                question = "How many applications are there by type?"
             }
         });
     }
@@ -63,5 +78,72 @@ public sealed class QueryController : ControllerBase
         }
 
         return Content(explanation, "text/plain");
+    }
+
+    [HttpPost("generate-query")]
+    [Produces("text/plain", "application/json")]
+    [ProducesResponseType(typeof(string), StatusCodes.Status200OK, "text/plain")]
+    [ProducesResponseType(typeof(GenerateQueryResponse), StatusCodes.Status200OK, "application/json")]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    public async Task<ActionResult> GenerateQuery(
+        [FromBody] GenerateQueryRequest request,
+        CancellationToken cancellationToken)
+    {
+        var requirement = request.GetRequirement();
+        if (string.IsNullOrWhiteSpace(requirement))
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["requirement"] = ["Provide one of: requirement, requirements, or query."]
+            }));
+        }
+
+        _logger.LogInformation("Received generate-query request.");
+
+        var generatedQuery = await _aiAgentService.GenerateQueryAsync(requirement, cancellationToken);
+
+        var acceptsJson = Request.GetTypedHeaders().Accept?.Any(header =>
+            header.MediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase)) == true;
+
+        if (acceptsJson)
+        {
+            return Ok(new GenerateQueryResponse(generatedQuery));
+        }
+
+        return Content(generatedQuery, "text/plain");
+    }
+
+    [HttpPost("ask")]
+    [Produces("text/plain", "application/json")]
+    [ProducesResponseType(typeof(string), StatusCodes.Status200OK, "text/plain")]
+    [ProducesResponseType(typeof(AskQuestionResponse), StatusCodes.Status200OK, "application/json")]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    public async Task<ActionResult> AskQuestion(
+        [FromBody] AskQuestionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Question))
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["question"] = ["The question field is required."]
+            }));
+        }
+
+        _logger.LogInformation("Received ask request.");
+
+        var answer = await _aiAgentService.AskQuestionAsync(request.Question, cancellationToken);
+
+        var acceptsJson = Request.GetTypedHeaders().Accept?.Any(header =>
+            header.MediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase)) == true;
+
+        if (acceptsJson)
+        {
+            return Ok(new AskQuestionResponse(answer));
+        }
+
+        return Content(answer, "text/plain");
     }
 }

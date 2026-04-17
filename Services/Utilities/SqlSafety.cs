@@ -206,7 +206,15 @@ public static partial class SqlSafety
 
         if (!TopRegex().IsMatch(trimmed))
         {
-            trimmed = SelectRegex().Replace(trimmed, "SELECT TOP 50 ", 1);
+            // Handle SELECT DISTINCT separately to maintain correct SQL syntax
+            if (SelectDistinctRegex().IsMatch(trimmed))
+            {
+                trimmed = SelectDistinctRegex().Replace(trimmed, "SELECT DISTINCT TOP 50 ", 1);
+            }
+            else
+            {
+                trimmed = SelectRegex().Replace(trimmed, "SELECT TOP 50 ", 1);
+            }
         }
 
         return trimmed;
@@ -346,9 +354,12 @@ public static partial class SqlSafety
         return true;
     }
 
-    [GeneratedRegex(@"^\s*SELECT\s+TOP\s+\(?\d+\)?\s+", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^\s*SELECT\s+(DISTINCT\s+)?TOP\s+\(?\d+\)?\s+", RegexOptions.IgnoreCase)]
     private static partial Regex TopRegex();
 
     [GeneratedRegex(@"^\s*SELECT\s+", RegexOptions.IgnoreCase)]
     private static partial Regex SelectRegex();
+
+    [GeneratedRegex(@"^\s*SELECT\s+DISTINCT\s+", RegexOptions.IgnoreCase)]
+    private static partial Regex SelectDistinctRegex();
 }
