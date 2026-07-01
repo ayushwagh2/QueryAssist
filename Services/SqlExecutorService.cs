@@ -46,14 +46,34 @@ public sealed class SqlExecutorService : ISqlExecutorService
             commandTimeout: 10,
             cancellationToken: cancellationToken);
 
-        var rows = (await connection.QueryAsync(command))
-            .Select(row => (IDictionary<string, object?>)row)
-            .Select(row => row.ToDictionary(
-                entry => entry.Key,
-                entry => NormalizeValue(entry.Value)))
-            .ToList();
+        try
+        {
+            var rows = (await connection.QueryAsync(command))
+                .Select(row => (IDictionary<string, object?>)row)
+                .Select(row => row.ToDictionary(
+                    entry => entry.Key,
+                    entry => NormalizeValue(entry.Value)))
+                .ToList();
 
-        return JsonSerializer.Serialize(rows, JsonOptions);
+            return JsonSerializer.Serialize(rows, JsonOptions);
+        }
+        catch (SqlException ex) when (ex.Message.Contains("Invalid column name", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning("SQL query failed due to invalid column: {Message}. Query: {Sql}", ex.Message, safeQuery);
+            
+            // Return an error response that the AI can understand and act on
+            var errorResponse = new[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["error"] = "Invalid column name",
+                    ["message"] = ex.Message,
+                    ["hint"] = "Please query INFORMATION_SCHEMA.COLUMNS to verify the correct column names for this table before attempting to query it."
+                }
+            };
+            
+            return JsonSerializer.Serialize(errorResponse, JsonOptions);
+        }
     }
 
     private static string NormalizeConnectionString(string connectionString)

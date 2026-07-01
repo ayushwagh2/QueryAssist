@@ -62,27 +62,26 @@ public sealed class AiAgentService : IAiAgentService
         Return the SQL query only.
         """;
 
-    private const string QuestionAnsweringSystemPrompt = """
+    private const string RagQuestionAnsweringSystemPrompt = """
         You are a database assistant that answers questions by querying the database.
 
-        You will be given a natural-language question from a user about data in the database.
+        You will be given:
+        1. A natural-language question from a user
+        2. Relevant schema context retrieved via semantic search (tables, columns, relationships)
 
-        Your job is to understand the question, query the database as needed, and provide a detailed explanation.
+        Your job is to understand the question, use the provided schema context, query the database as needed, and provide a detailed answer.
 
         Rules:
-        * You are allowed to call the run_sql tool to query INFORMATION_SCHEMA and business tables
+        * IMPORTANT: Use the provided schema context as your primary source of truth for table and column names
+        * You are allowed to call the run_sql tool to query business tables and verify additional schema details
         * run_sql only supports SELECT statements; never attempt data changes
-        * Before assuming table or column names, verify them with INFORMATION_SCHEMA.COLUMNS or INFORMATION_SCHEMA.TABLES
-        * Never invent table names, column names, or relationships
-        * Query the database to find the answer to the user's question
-        * If you need to understand relationships, check for foreign keys or naming patterns (columns ending in ID)
-        * Resolve IDs to human-readable values when possible
+        * Trust the schema context provided - these are the most relevant tables and columns for the question
+        * If the schema context shows relationships (foreign keys), use them to join tables appropriately
+        * Resolve IDs to human-readable values when the schema context indicates lookup tables exist
         * Provide a comprehensive, detailed answer in plain English
         * Include relevant data values, counts, or summaries as appropriate
-        * If the question cannot be answered from the database, explain why
-        * IMPORTANT: You have a maximum of 6 tool calls. Plan your queries efficiently.
-        * IMPORTANT: Do not repeat the same or similar queries. If you have already queried a table's schema, use that information.
-        * IMPORTANT: Once you have enough data to answer the question, provide your final answer immediately. Do not continue exploring.
+        * If the question cannot be answered from the available schema, explain why
+        * IMPORTANT: Once you have enough data to answer the question, provide your final answer immediately
 
         Return a detailed natural language answer.
         """;
@@ -94,19 +93,25 @@ public sealed class AiAgentService : IAiAgentService
 
     private readonly HttpClient _httpClient;
     private readonly ISqlExecutorService _sqlExecutorService;
+    private readonly ISchemaEmbeddingService _schemaEmbeddingService;
     private readonly ILogger<AiAgentService> _logger;
     private readonly GeminiOptions _options;
+    private readonly EmbeddingOptions _embeddingOptions;
 
     public AiAgentService(
         HttpClient httpClient,
         ISqlExecutorService sqlExecutorService,
+        ISchemaEmbeddingService schemaEmbeddingService,
         IOptions<GeminiOptions> options,
+        IOptions<EmbeddingOptions> embeddingOptions,
         ILogger<AiAgentService> logger)
     {
         _httpClient = httpClient;
         _sqlExecutorService = sqlExecutorService;
+        _schemaEmbeddingService = schemaEmbeddingService;
         _logger = logger;
         _options = options.Value;
+        _embeddingOptions = embeddingOptions.Value;
     }
 
     public async Task<string> AnalyzeQueryAsync(string query, CancellationToken cancellationToken)
@@ -257,7 +262,15 @@ public sealed class AiAgentService : IAiAgentService
             throw new InvalidOperationException("Gemini:ApiKey is not configured.");
         }
 
-        var contents = BuildQuestionAnsweringConversation(question);
+        // RAG: Retrieve relevant schema context using embeddings
+        var schemaContext = await RetrieveRelevantSchemaAsync(question, cancellationToken);
+
+        _logger.LogInformation(
+            "RAG retrieved {Count} schema elements for question: {Question}",
+            schemaContext.Count,
+            question);
+
+        var contents = BuildRagQuestionAnsweringConversation(question, schemaContext);
 
         for (var attempt = 0; attempt < 8; attempt++)
         {
@@ -291,7 +304,7 @@ public sealed class AiAgentService : IAiAgentService
                 var sql = toolCall.FunctionArguments["query"]?.GetValue<string>()
                     ?? throw new InvalidOperationException("Tool call did not include a query.");
 
-                _logger.LogInformation("AI requested SQL lookup for question-answering: {Sql}", sql);
+                _logger.LogInformation("AI requested SQL lookup for RAG question-answering: {Sql}", sql);
 
                 var jsonResult = await ExecuteToolQueryAsync(sql, cancellationToken);
                 contents.Add(new JsonObject
@@ -306,14 +319,109 @@ public sealed class AiAgentService : IAiAgentService
                                 ["response"] = new JsonObject
                                 {
                                     ["result"] = jsonResult
+                                }
                             }
-                        }
-                    })
+                        })
                 });
             }
         }
 
         throw new InvalidOperationException("The Gemini assistant did not finish answering within the allowed tool-call iterations.");
+    }
+
+    private async Task<IReadOnlyList<SchemaSearchResult>> RetrieveRelevantSchemaAsync(
+        string question,
+        CancellationToken cancellationToken)
+    {
+        return await _schemaEmbeddingService.SearchRelevantSchemaAsync(
+            question,
+            _embeddingOptions.MaxSchemaResults,
+            cancellationToken);
+    }
+
+    private List<JsonObject> BuildRagQuestionAnsweringConversation(
+        string question,
+        IReadOnlyList<SchemaSearchResult> schemaContext)
+    {
+        var schemaContextText = BuildSchemaContextText(schemaContext);
+
+        return
+        [
+            new JsonObject
+            {
+                ["role"] = "user",
+                ["parts"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["text"] = $"""
+                            {RagQuestionAnsweringSystemPrompt}
+
+                            ## Relevant Schema Context (from semantic search)
+                            {schemaContextText}
+
+                            ## User Question
+                            {question}
+                            """
+                    })
+            }
+        ];
+    }
+
+    private static string BuildSchemaContextText(IReadOnlyList<SchemaSearchResult> schemaContext)
+    {
+        if (schemaContext.Count == 0)
+        {
+            return "No specific schema context was retrieved. You may need to explore INFORMATION_SCHEMA.";
+        }
+
+        var sb = new StringBuilder();
+
+        // Group by table for better organization
+        var tableGroups = schemaContext
+            .GroupBy(r => $"{r.Schema.TableSchema}.{r.Schema.TableName}")
+            .OrderByDescending(g => g.Max(r => r.SimilarityScore));
+
+        foreach (var tableGroup in tableGroups)
+        {
+            var tableName = tableGroup.Key;
+            var maxScore = tableGroup.Max(r => r.SimilarityScore);
+            sb.AppendLine($"### {tableName} (relevance: {maxScore:P0})");
+
+            var tableElement = tableGroup.FirstOrDefault(r => r.Schema.ElementType == SchemaElementType.Table);
+            if (tableElement != null)
+            {
+                sb.AppendLine($"  - Table: {tableElement.Schema.Description}");
+            }
+
+            var columns = tableGroup
+                .Where(r => r.Schema.ElementType == SchemaElementType.Column)
+                .OrderByDescending(r => r.SimilarityScore);
+
+            foreach (var column in columns)
+            {
+                sb.AppendLine($"  - {column.Schema.ColumnName} ({column.Schema.DataType})");
+
+                if (column.Schema.ForeignKeyHints?.Count > 0)
+                {
+                    foreach (var hint in column.Schema.ForeignKeyHints)
+                    {
+                        sb.AppendLine($"    * FK hint: {hint}");
+                    }
+                }
+            }
+
+            var relationships = tableGroup
+                .Where(r => r.Schema.ElementType == SchemaElementType.Relationship);
+
+            foreach (var rel in relationships)
+            {
+                sb.AppendLine($"  - Relationship: {rel.Schema.Description}");
+            }
+
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
     }
 
     private async Task<JsonNode?> ExecuteToolQueryAsync(string sql, CancellationToken cancellationToken)
@@ -625,24 +733,24 @@ public sealed class AiAgentService : IAiAgentService
 
     private sealed record ToolCall(string FunctionName, JsonObject FunctionArguments);
 
-    private List<JsonObject> BuildQuestionAnsweringConversation(string question)
-    {
-        return
-        [
-            new JsonObject
-        {
-            ["role"] = "user",
-            ["parts"] = new JsonArray(
-                new JsonObject
-                {
-                    ["text"] = $"""
-                        {QuestionAnsweringSystemPrompt}
+    //private List<JsonObject> BuildQuestionAnsweringConversation(string question)
+    //{
+    //    return
+    //    [
+    //        new JsonObject
+    //    {
+    //        ["role"] = "user",
+    //        ["parts"] = new JsonArray(
+    //            new JsonObject
+    //            {
+    //                ["text"] = $"""
+    //                    {QuestionAnsweringSystemPrompt}
 
-                        User question:
-                        {question}
-                        """
-                })
-        }
-        ];
-    }
+    //                    User question:
+    //                    {question}
+    //                    """
+    //            })
+    //    }
+    //    ];
+    //}
 }

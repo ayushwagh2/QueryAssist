@@ -13,17 +13,18 @@ public static partial class SqlChangeParser
         }
 
         var trimmed = sql.Trim();
-        //if (trimmed.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
-        //{
+        
+        if (trimmed.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
+        {
             return ParseUpdate(trimmed);
-        //}
+        }
 
-        //if (trimmed.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase))
-        //{
-        //    return ParseInsert(trimmed);
-        //}
+        if (trimmed.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase))
+        {
+            return ParseInsert(trimmed);
+        }
 
-        //throw new InvalidOperationException("Only UPDATE and INSERT statements are supported right now.");
+        throw new InvalidOperationException("Only UPDATE and INSERT statements are supported right now.");
     }
 
     private static ParsedSqlChange ParseUpdate(string sql)
@@ -61,13 +62,22 @@ public static partial class SqlChangeParser
         }
 
         var targetObject = match.Groups["target"].Value.Trim();
+        var sourceObjects = ExtractTableReferences(sql);
+        
+        // For INSERT INTO ... SELECT, extract the SELECT portion as predicate/filter
+        var selectMatch = InsertSelectRegex().Match(sql);
+        string? predicate = null;
+        if (selectMatch.Success)
+        {
+            predicate = selectMatch.Groups["select"].Value.Trim();
+        }
 
         return new ParsedSqlChange(
             "INSERT",
             targetObject,
-            ExtractTableReferences(sql),
-            [],
-            null,
+            sourceObjects,
+            [], // No column assignments for INSERT SELECT
+            predicate,
             sql);
     }
 
@@ -100,6 +110,11 @@ public static partial class SqlChangeParser
         @"^INSERT\s+INTO\s+(?<target>[@\[\]\w\.]+)",
         RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex InsertRegex();
+
+    [GeneratedRegex(
+        @"INSERT\s+INTO\s+[@\[\]\w\.]+.*?(?<select>SELECT\s+.+)",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex InsertSelectRegex();
 
     [GeneratedRegex(
         @"\b(?:FROM|JOIN)\s+(?<table>@?[\[\]\w\.]+)",
