@@ -31,7 +31,8 @@ public sealed class QueryController : ControllerBase
                 "POST /analyze-query",
                 "POST /generate-query",
                 "POST /ask",
-                "POST /queue-sps"
+                "POST /queue-sps",
+                "POST /explain-sp"
             },
             exampleBody = new
             {
@@ -202,5 +203,70 @@ public sealed class QueryController : ControllerBase
         _logger.LogInformation("Queued {Count} SPs for embedding generation.", count);
 
         return Accepted(new { message = $"Successfully queued {count} stored procedures for background processing." });
+    }
+
+    [HttpPost("explain-sp")]
+    [ProducesResponseType(typeof(ExplainSpResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> ExplainStoredProcedure(
+        [FromBody] ExplainSpRequest request,
+        [FromServices] IEmbeddingService embeddingService,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request?.Question))
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["question"] = ["The question field is required."]
+            }));
+        }
+
+        var filePath = "StoredProcedures.json";
+        if (!System.IO.File.Exists(filePath))
+        {
+            return NotFound(new { message = "Stored procedures cache not found. Please queue SPs first." });
+        }
+
+        var json = await System.IO.File.ReadAllTextAsync(filePath, cancellationToken);
+        var sps = System.Text.Json.JsonSerializer.Deserialize<List<StoredProcedureEmbedding>>(json) ?? new List<StoredProcedureEmbedding>();
+
+        if (sps.Count == 0)
+        {
+            return NotFound(new { message = "Stored procedures cache is empty. Please queue SPs first." });
+        }
+
+        // Generate embedding for the question
+        var questionEmbedding = await embeddingService.GenerateEmbeddingAsync(request.Question, cancellationToken);
+
+        // Find the SP with the highest cosine similarity
+        StoredProcedureEmbedding? bestSp = null;
+        float bestSimilarity = -2.0f;
+
+        foreach (var sp in sps)
+        {
+            if (sp.Embedding == null || sp.Embedding.Length != questionEmbedding.Length)
+            {
+                continue;
+            }
+
+            float similarity = embeddingService.CosineSimilarity(questionEmbedding, sp.Embedding);
+            if (similarity > bestSimilarity)
+            {
+                bestSimilarity = similarity;
+                bestSp = sp;
+            }
+        }
+
+        if (bestSp == null || string.IsNullOrWhiteSpace(bestSp.Text))
+        {
+            return NotFound(new { message = "Could not find a matching stored procedure for the given question." });
+        }
+
+        _logger.LogInformation("Explaining SP: {SpName} (Similarity: {Score:F3}) for question: {Question}", bestSp.Name, bestSimilarity, request.Question);
+
+        var explanation = await _aiAgentService.ExplainStoredProcedureAsync(bestSp.Name, bestSp.Text, cancellationToken);
+
+        return Ok(new ExplainSpResponse(bestSp.Name, bestSimilarity, explanation));
     }
 }

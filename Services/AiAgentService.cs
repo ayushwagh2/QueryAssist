@@ -86,6 +86,19 @@ public sealed class AiAgentService : IAiAgentService
         Return a detailed natural language answer.
         """;
 
+    private const string SpExplanationSystemPrompt = """
+        You are an expert database developer.
+        
+        You will be given the name and SQL text of a Stored Procedure.
+        Your job is to read the SQL code and explain what the Stored Procedure does in plain English.
+        
+        Rules:
+        * Describe the overall business logic.
+        * Mention which main tables it reads from or writes to based on the SQL text.
+        * Explain any important filters, joins, or conditions.
+        * Return a clear, well-structured explanation.
+        """;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
@@ -329,6 +342,39 @@ public sealed class AiAgentService : IAiAgentService
         throw new InvalidOperationException("The Gemini assistant did not finish answering within the allowed tool-call iterations.");
     }
 
+    public async Task<string> ExplainStoredProcedureAsync(string spName, string spText, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            throw new InvalidOperationException("Gemini:ApiKey is not configured.");
+        }
+
+        _logger.LogInformation("Explaining SP: {SpName} (Length: {Length})", spName, spText.Length);
+
+        var contents = BuildSpExplanationConversation(spName, spText);
+
+        using var request = CreateGenerateContentRequest(contents);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Gemini request failed with status {StatusCode}: {Body}", response.StatusCode, content);
+            throw new InvalidOperationException(
+                $"Gemini request failed with status {(int)response.StatusCode} ({response.StatusCode}). Response: {content}");
+        }
+
+        var assistantReply = ParseAssistantReply(content);
+        var finalAnswer = SanitizeExplanation(assistantReply.Text);
+
+        if (string.IsNullOrWhiteSpace(finalAnswer))
+        {
+            throw new InvalidOperationException("The Gemini response did not include an explanation.");
+        }
+
+        return finalAnswer;
+    }
+
     private async Task<IReadOnlyList<SchemaSearchResult>> RetrieveRelevantSchemaAsync(
         string question,
         CancellationToken cancellationToken)
@@ -361,6 +407,33 @@ public sealed class AiAgentService : IAiAgentService
 
                             ## User Question
                             {question}
+                            """
+                    })
+            }
+        ];
+    }
+
+    private List<JsonObject> BuildSpExplanationConversation(
+        string spName,
+        string spText)
+    {
+        return
+        [
+            new JsonObject
+            {
+                ["role"] = "user",
+                ["parts"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["text"] = $"""
+                            {SpExplanationSystemPrompt}
+
+                            ## Stored Procedure to Explain
+                            Name: {spName}
+
+                            ```sql
+                            {spText}
+                            ```
                             """
                     })
             }
