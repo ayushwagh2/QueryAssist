@@ -25,6 +25,9 @@ builder.Services.AddScoped<ISqlExecutorService, SqlExecutorService>();
 builder.Services.AddSingleton<IEmbeddingService, EmbeddingService>();
 builder.Services.AddSingleton<ISchemaEmbeddingService, SchemaEmbeddingService>();
 
+builder.Services.AddSingleton<SpEmbeddingQueue>();
+builder.Services.AddHostedService<SpEmbeddingBackgroundWorker>();
+
 var app = builder.Build();
 
 // DO NOT pre-initialize schema embeddings on startup

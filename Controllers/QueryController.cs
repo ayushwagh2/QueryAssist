@@ -30,7 +30,8 @@ public sealed class QueryController : ControllerBase
             {
                 "POST /analyze-query",
                 "POST /generate-query",
-                "POST /ask"
+                "POST /ask",
+                "POST /queue-sps"
             },
             exampleBody = new
             {
@@ -145,5 +146,61 @@ public sealed class QueryController : ControllerBase
         }
 
         return Content(answer, "text/plain");
+    }
+
+    [HttpPost("queue-sps")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public IActionResult QueueStoredProcedures(
+        [FromBody] BulkEmbedSpRequest request,
+        [FromServices] SpEmbeddingQueue queue)
+    {
+        var count = 0;
+
+        if (request?.StoredProcedures != null && request.StoredProcedures.Count > 0)
+        {
+            foreach (var sp in request.StoredProcedures)
+            {
+                if (!string.IsNullOrWhiteSpace(sp.Name) && !string.IsNullOrWhiteSpace(sp.Text))
+                {
+                    queue.QueueBackgroundWorkItem(sp);
+                    count++;
+                }
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(request?.RawExportData))
+        {
+            // Split by newline where the next line starts with a number (object_id) and a tab
+            var rows = System.Text.RegularExpressions.Regex.Split(request.RawExportData, @"(?:\r?\n)(?=\d+\t)");
+            
+            foreach (var row in rows)
+            {
+                // Pattern: object_id \t schema \t name \t definition \t date \t date
+                var match = System.Text.RegularExpressions.Regex.Match(row.Trim(), @"^\d+\t[^\t]+\t([^\t]+)\t([\s\S]+?)\t\d{4}-\d{2}-\d{2}.*?\t\d{4}-\d{2}-\d{2}");
+                if (match.Success)
+                {
+                    var spName = match.Groups[1].Value.Trim();
+                    var spText = match.Groups[2].Value.Trim();
+                    
+                    if (!string.IsNullOrWhiteSpace(spName) && !string.IsNullOrWhiteSpace(spText))
+                    {
+                        queue.QueueBackgroundWorkItem(new SpItem { Name = spName, Text = spText });
+                        count++;
+                    }
+                }
+            }
+        }
+
+        if (count == 0)
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["payload"] = ["No valid stored procedures were found in the provided payload."]
+            }));
+        }
+
+        _logger.LogInformation("Queued {Count} SPs for embedding generation.", count);
+
+        return Accepted(new { message = $"Successfully queued {count} stored procedures for background processing." });
     }
 }
