@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QueryAssist AI Tester</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>QueryAssist <span>AI</span></h1>
+            <p>Test all API Endpoints</p>
+        </header>
+
+        <main>
+            <div class="control-group">
+                <label for="apiSelect">Select API Endpoint:</label>
+                <select id="apiSelect">
+                    <optgroup label="Semantic Explanation">
+                        <option value="explain-sp">POST /explain-sp</option>
+                        <option value="explain-table">POST /explain-table</option>
+                    </optgroup>
+                    <optgroup label="General AI Querying">
+                        <option value="ask">POST /ask</option>
+                        <option value="generate-query">POST /generate-query</option>
+                    </optgroup>
+                    <optgroup label="Queue Embeddings (Background)">
+                        <option value="queue-sps">POST /queue-sps</option>
+                        <option value="queue-tables">POST /queue-tables</option>
+                        <option value="queue-functions">POST /queue-functions</option>
+                    </optgroup>
+                </select>
+            </div>
+
+            <!-- Single text input for questions / requirements -->
+            <div id="textInputContainer" class="input-container">
+                <label for="questionInput" id="textInputLabel">Question / Requirement:</label>
+                <input type="text" id="questionInput" placeholder="Enter your question here..." />
+            </div>
+
+            <!-- Text area for JSON payloads (queueing) -->
+            <div id="jsonInputContainer" class="input-container hidden">
+                <label for="jsonInput">JSON Payload:</label>
+                <textarea id="jsonInput" rows="10" placeholder='{"tables": [...]}'></textarea>
+            </div>
+
+            <button id="submitBtn">Send Request</button>
+
+            <div id="loading" class="hidden">
+                <div class="spinner"></div>
+                <p>Processing request...</p>
+            </div>
+
+            <div id="results" class="hidden">
+                <h2>Response:</h2>
+                <pre id="responseJson"></pre>
+            </div>
+
+            <div id="error" class="hidden error-box"></div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

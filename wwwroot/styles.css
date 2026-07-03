@@ -1,0 +1,114 @@
+body {
+    font-family: sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f9f9f9;
+    color: #333;
+}
+
+.container {
+    max-width: 900px;
+    margin: 0 auto;
+    background: #fff;
+    padding: 20px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+header {
+    border-bottom: 1px solid #eee;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+}
+
+h1 {
+    margin: 0 0 5px 0;
+    font-size: 24px;
+}
+
+.control-group {
+    margin-bottom: 20px;
+}
+
+.control-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+.input-container {
+    margin-bottom: 20px;
+}
+
+.input-container label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+select, input, textarea, button {
+    width: 100%;
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+    font-family: monospace;
+}
+
+select, input {
+    font-family: sans-serif;
+}
+
+button {
+    background: #007bff;
+    color: white;
+    cursor: pointer;
+    border: none;
+    font-weight: bold;
+    font-family: sans-serif;
+}
+
+button:hover {
+    background: #0056b3;
+}
+
+.hidden {
+    display: none !important;
+}
+
+#loading {
+    margin: 20px 0;
+    font-style: italic;
+    color: #666;
+}
+
+#results {
+    margin-top: 20px;
+    border-top: 1px solid #eee;
+    padding-top: 20px;
+}
+
+#results h2 {
+    margin: 0 0 10px 0;
+    font-size: 18px;
+}
+
+pre {
+    background: #f4f4f4;
+    padding: 15px;
+    border-radius: 4px;
+    overflow-x: auto;
+    border: 1px solid #ddd;
+    white-space: pre-wrap;
+}
+
+.error-box {
+    margin-top: 20px;
+    color: red;
+    padding: 15px;
+    border: 1px solid red;
+    background: #ffe6e6;
+    border-radius: 4px;
+    white-space: pre-wrap;
+}

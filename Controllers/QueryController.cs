@@ -19,7 +19,7 @@ public sealed class QueryController : ControllerBase
         _logger = logger;
     }
 
-    [HttpGet]
+    [HttpGet("status")]
     [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
     public IActionResult Index()
     {
@@ -32,7 +32,10 @@ public sealed class QueryController : ControllerBase
                 "POST /generate-query",
                 "POST /ask",
                 "POST /queue-sps",
-                "POST /explain-sp"
+                "POST /explain-sp",
+                "POST /queue-tables",
+                "POST /queue-functions",
+                "POST /explain-table"
             },
             exampleBody = new
             {
@@ -205,6 +208,74 @@ public sealed class QueryController : ControllerBase
         return Accepted(new { message = $"Successfully queued {count} stored procedures for background processing." });
     }
 
+    [HttpPost("queue-tables")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public IActionResult QueueTables(
+        [FromBody] BulkEmbedTableRequest request,
+        [FromServices] TableEmbeddingQueue queue)
+    {
+        var count = 0;
+
+        if (request?.Tables != null && request.Tables.Count > 0)
+        {
+            foreach (var table in request.Tables)
+            {
+                if (!string.IsNullOrWhiteSpace(table.Name) && table.Columns.Count > 0)
+                {
+                    queue.QueueBackgroundWorkItem(table);
+                    count++;
+                }
+            }
+        }
+
+        if (count == 0)
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["payload"] = ["No valid tables were found in the provided payload."]
+            }));
+        }
+
+        _logger.LogInformation("Queued {Count} Tables for embedding generation.", count);
+
+        return Accepted(new { message = $"Successfully queued {count} tables for background processing." });
+    }
+
+    [HttpPost("queue-functions")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public IActionResult QueueFunctions(
+        [FromBody] BulkEmbedFunctionRequest request,
+        [FromServices] FunctionEmbeddingQueue queue)
+    {
+        var count = 0;
+
+        if (request?.Functions != null && request.Functions.Count > 0)
+        {
+            foreach (var func in request.Functions)
+            {
+                if (!string.IsNullOrWhiteSpace(func.Name) && !string.IsNullOrWhiteSpace(func.Definition))
+                {
+                    queue.QueueBackgroundWorkItem(func);
+                    count++;
+                }
+            }
+        }
+
+        if (count == 0)
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["payload"] = ["No valid functions were found in the provided payload."]
+            }));
+        }
+
+        _logger.LogInformation("Queued {Count} Functions for embedding generation.", count);
+
+        return Accepted(new { message = $"Successfully queued {count} functions for background processing." });
+    }
+
     [HttpPost("explain-sp")]
     [ProducesResponseType(typeof(ExplainSpResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -268,5 +339,70 @@ public sealed class QueryController : ControllerBase
         var explanation = await _aiAgentService.ExplainStoredProcedureAsync(bestSp.Name, bestSp.Text, cancellationToken);
 
         return Ok(new ExplainSpResponse(bestSp.Name, bestSimilarity, explanation));
+    }
+
+    [HttpPost("explain-table")]
+    [ProducesResponseType(typeof(ExplainTableResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> ExplainTable(
+        [FromBody] ExplainTableRequest request,
+        [FromServices] IEmbeddingService embeddingService,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request?.Question))
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["question"] = ["The question field is required."]
+            }));
+        }
+
+        var filePath = "Tables.json";
+        if (!System.IO.File.Exists(filePath))
+        {
+            return NotFound(new { message = "Tables cache not found. Please queue tables first." });
+        }
+
+        var json = await System.IO.File.ReadAllTextAsync(filePath, cancellationToken);
+        var tables = System.Text.Json.JsonSerializer.Deserialize<List<TableEmbedding>>(json) ?? new List<TableEmbedding>();
+
+        if (tables.Count == 0)
+        {
+            return NotFound(new { message = "Tables cache is empty. Please queue tables first." });
+        }
+
+        // Generate embedding for the question
+        var questionEmbedding = await embeddingService.GenerateEmbeddingAsync(request.Question, cancellationToken);
+
+        // Find the Table with the highest cosine similarity
+        TableEmbedding? bestTable = null;
+        float bestSimilarity = -2.0f;
+
+        foreach (var table in tables)
+        {
+            if (table.Embedding == null || table.Embedding.Length != questionEmbedding.Length)
+            {
+                continue;
+            }
+
+            float similarity = embeddingService.CosineSimilarity(questionEmbedding, table.Embedding);
+            if (similarity > bestSimilarity)
+            {
+                bestSimilarity = similarity;
+                bestTable = table;
+            }
+        }
+
+        if (bestTable == null || string.IsNullOrWhiteSpace(bestTable.Text))
+        {
+            return NotFound(new { message = "Could not find a matching table for the given question." });
+        }
+
+        _logger.LogInformation("Explaining Table: {TableName} (Similarity: {Score:F3}) for question: {Question}", bestTable.Name, bestSimilarity, request.Question);
+
+        var explanation = await _aiAgentService.ExplainTableAsync(bestTable.Name, bestTable.Text, cancellationToken);
+
+        return Ok(new ExplainTableResponse(bestTable.Name, bestSimilarity, explanation));
     }
 }

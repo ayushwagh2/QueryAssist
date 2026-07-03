@@ -99,6 +99,19 @@ public sealed class AiAgentService : IAiAgentService
         * Return a clear, well-structured explanation.
         """;
 
+    private const string TableExplanationSystemPrompt = """
+        You are an expert database architect.
+        
+        You will be given the name and SQL definition of a database Table.
+        Your job is to read the SQL definition and explain what the Table is for in plain English.
+        
+        Rules:
+        * Describe the likely business purpose of the table.
+        * Mention the primary key and important columns.
+        * Explain any foreign keys or relationships to other tables.
+        * Return a clear, well-structured explanation.
+        """;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
@@ -375,6 +388,39 @@ public sealed class AiAgentService : IAiAgentService
         return finalAnswer;
     }
 
+    public async Task<string> ExplainTableAsync(string tableName, string tableText, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            throw new InvalidOperationException("Gemini:ApiKey is not configured.");
+        }
+
+        _logger.LogInformation("Explaining Table: {TableName} (Length: {Length})", tableName, tableText.Length);
+
+        var contents = BuildTableExplanationConversation(tableName, tableText);
+
+        using var request = CreateGenerateContentRequest(contents);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Gemini request failed with status {StatusCode}: {Body}", response.StatusCode, content);
+            throw new InvalidOperationException(
+                $"Gemini request failed with status {(int)response.StatusCode} ({response.StatusCode}). Response: {content}");
+        }
+
+        var assistantReply = ParseAssistantReply(content);
+        var finalAnswer = SanitizeExplanation(assistantReply.Text);
+
+        if (string.IsNullOrWhiteSpace(finalAnswer))
+        {
+            throw new InvalidOperationException("The Gemini response did not include an explanation.");
+        }
+
+        return finalAnswer;
+    }
+
     private async Task<IReadOnlyList<SchemaSearchResult>> RetrieveRelevantSchemaAsync(
         string question,
         CancellationToken cancellationToken)
@@ -433,6 +479,33 @@ public sealed class AiAgentService : IAiAgentService
 
                             ```sql
                             {spText}
+                            ```
+                            """
+                    })
+            }
+        ];
+    }
+
+    private List<JsonObject> BuildTableExplanationConversation(
+        string tableName,
+        string tableText)
+    {
+        return
+        [
+            new JsonObject
+            {
+                ["role"] = "user",
+                ["parts"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["text"] = $"""
+                            {TableExplanationSystemPrompt}
+
+                            ## Table to Explain
+                            Name: {tableName}
+
+                            ```sql
+                            {tableText}
                             ```
                             """
                     })
