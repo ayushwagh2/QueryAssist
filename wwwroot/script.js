@@ -24,6 +24,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 jsonInput.placeholder = '{"storeProcedures": [...]}';
             } else if (val === 'queue-tables') {
                 jsonInput.placeholder = '{"tables": [...]}';
+            } else if (val === 'queue-relationships') {
+                jsonInput.placeholder = '{"relationships": [...]}';
             } else if (val === 'queue-functions') {
                 jsonInput.placeholder = '{"functions": [...]}';
             }

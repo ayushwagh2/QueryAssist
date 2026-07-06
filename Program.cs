@@ -25,6 +25,16 @@ builder.Services.AddScoped<ISqlExecutorService, SqlExecutorService>();
 builder.Services.AddSingleton<IEmbeddingService, EmbeddingService>();
 builder.Services.AddSingleton<ISchemaEmbeddingService, SchemaEmbeddingService>();
 
+// Register AI Tools
+builder.Services.AddScoped<QueryAssist.Services.Tools.IAiTool, QueryAssist.Services.Tools.ExplainTableTool>();
+builder.Services.AddScoped<QueryAssist.Services.Tools.IAiTool, QueryAssist.Services.Tools.ExplainSpTool>();
+builder.Services.AddScoped<QueryAssist.Services.Tools.IAiTool, QueryAssist.Services.Tools.ExplainFunctionTool>();
+builder.Services.AddScoped<QueryAssist.Services.Tools.IAiTool, QueryAssist.Services.Tools.FindRelationshipsTool>();
+builder.Services.AddScoped<QueryAssist.Services.Tools.IAiTool, QueryAssist.Services.Tools.GenerateSqlTool>();
+
+// Register Orchestrator
+builder.Services.AddScoped<IAskOrchestratorService, AskOrchestratorService>();
+
 builder.Services.AddSingleton<SpEmbeddingQueue>();
 builder.Services.AddHostedService<SpEmbeddingBackgroundWorker>();
 
@@ -33,6 +43,9 @@ builder.Services.AddHostedService<TableEmbeddingBackgroundWorker>();
 
 builder.Services.AddSingleton<FunctionEmbeddingQueue>();
 builder.Services.AddHostedService<FunctionEmbeddingBackgroundWorker>();
+
+builder.Services.AddSingleton<RelationshipEmbeddingQueue>();
+builder.Services.AddHostedService<RelationshipEmbeddingBackgroundWorker>();
 
 var app = builder.Build();
 

@@ -35,7 +35,8 @@ public sealed class QueryController : ControllerBase
                 "POST /explain-sp",
                 "POST /queue-tables",
                 "POST /queue-functions",
-                "POST /explain-table"
+                "POST /explain-table",
+                "POST /route-question"
             },
             exampleBody = new
             {
@@ -120,13 +121,12 @@ public sealed class QueryController : ControllerBase
     }
 
     [HttpPost("ask")]
-    [Produces("text/plain", "application/json")]
-    [ProducesResponseType(typeof(string), StatusCodes.Status200OK, "text/plain")]
-    [ProducesResponseType(typeof(AskQuestionResponse), StatusCodes.Status200OK, "application/json")]
+    [ProducesResponseType(typeof(AskOrchestratorResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult> AskQuestion(
         [FromBody] AskQuestionRequest request,
+        [FromServices] IAskOrchestratorService orchestrator,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Question))
@@ -137,19 +137,11 @@ public sealed class QueryController : ControllerBase
             }));
         }
 
-        _logger.LogInformation("Received ask request.");
+        _logger.LogInformation("Received orchestrated ask request.");
 
-        var answer = await _aiAgentService.AskQuestionAsync(request.Question, cancellationToken);
-
-        var acceptsJson = Request.GetTypedHeaders().Accept?.Any(header =>
-            header.MediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase)) == true;
-
-        if (acceptsJson)
-        {
-            return Ok(new AskQuestionResponse(answer));
-        }
-
-        return Content(answer, "text/plain");
+        var response = await orchestrator.AskAsync(request.Question, cancellationToken);
+        
+        return Ok(response);
     }
 
     [HttpPost("queue-sps")]
@@ -274,6 +266,40 @@ public sealed class QueryController : ControllerBase
         _logger.LogInformation("Queued {Count} Functions for embedding generation.", count);
 
         return Accepted(new { message = $"Successfully queued {count} functions for background processing." });
+    }
+
+    [HttpPost("queue-relationships")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public IActionResult QueueRelationships(
+        [FromBody] BulkEmbedRelationshipRequest request,
+        [FromServices] RelationshipEmbeddingQueue queue)
+    {
+        var count = 0;
+
+        if (request?.Relationships != null && request.Relationships.Count > 0)
+        {
+            foreach (var rel in request.Relationships)
+            {
+                if (!string.IsNullOrWhiteSpace(rel.ForeignKey))
+                {
+                    queue.QueueBackgroundWorkItem(rel);
+                    count++;
+                }
+            }
+        }
+
+        if (count == 0)
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["payload"] = ["No valid relationships were found in the provided payload."]
+            }));
+        }
+
+        _logger.LogInformation("Queued {Count} Relationships for embedding generation.", count);
+
+        return Accepted(new { message = $"Successfully queued {count} relationships for background processing." });
     }
 
     [HttpPost("explain-sp")]
@@ -404,5 +430,27 @@ public sealed class QueryController : ControllerBase
         var explanation = await _aiAgentService.ExplainTableAsync(bestTable.Name, bestTable.Text, cancellationToken);
 
         return Ok(new ExplainTableResponse(bestTable.Name, bestSimilarity, explanation));
+    }
+
+    [HttpPost("route-question")]
+    [ProducesResponseType(typeof(RouteQuestionResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RouteQuestion(
+        [FromBody] RouteQuestionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request?.Question))
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["question"] = ["The question field is required."]
+            }));
+        }
+
+        _logger.LogInformation("Routing question: {Question}", request.Question);
+
+        var collections = await _aiAgentService.DetermineKnowledgeSourcesAsync(request.Question, cancellationToken);
+
+        return Ok(new RouteQuestionResponse { Collections = collections });
     }
 }

@@ -112,6 +112,24 @@ public sealed class AiAgentService : IAiAgentService
         * Return a clear, well-structured explanation.
         """;
 
+    private const string RouteQuestionSystemPrompt = """
+        You are an intelligent database query router.
+        
+        You have access to these knowledge sources:
+        - tables
+        - stored_procedures
+        - views
+
+        Given the user's question, return the collections that should be searched.
+        
+        Return JSON only in this exact format:
+        {
+          "collections": [
+            "tables"
+          ]
+        }
+        """;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
@@ -419,6 +437,92 @@ public sealed class AiAgentService : IAiAgentService
         }
 
         return finalAnswer;
+    }
+
+    public async Task<List<string>> DetermineKnowledgeSourcesAsync(string question, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            throw new InvalidOperationException("Gemini:ApiKey is not configured.");
+        }
+
+        _logger.LogInformation("Determining knowledge sources for question: {Question}", question);
+
+        var contents = new List<JsonObject>
+        {
+            new JsonObject
+            {
+                ["role"] = "user",
+                ["parts"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["text"] = $"{RouteQuestionSystemPrompt}\n\nQuestion:\n{question}"
+                    })
+            }
+        };
+
+        var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{_options.BaseUrl.TrimEnd('/')}/models/{_options.Model}:generateContent?key={Uri.EscapeDataString(_options.ApiKey!)}");
+
+        var payload = new JsonObject
+        {
+            ["contents"] = new JsonArray(contents.Select(content => content.DeepClone()).ToArray()),
+            ["generationConfig"] = new JsonObject
+            {
+                ["temperature"] = 0.1,
+                ["responseMimeType"] = "application/json"
+            }
+        };
+
+        request.Content = new StringContent(payload.ToJsonString(JsonOptions), Encoding.UTF8, "application/json");
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Gemini request failed with status {StatusCode}: {Body}", response.StatusCode, content);
+            throw new InvalidOperationException(
+                $"Gemini request failed with status {(int)response.StatusCode} ({response.StatusCode}). Response: {content}");
+        }
+
+        var assistantReply = ParseAssistantReply(content);
+        
+        try
+        {
+            // Remove markdown formatting if any
+            var jsonString = assistantReply.Text.Trim();
+            if (jsonString.StartsWith("```json"))
+            {
+                jsonString = jsonString.Substring(7);
+                if (jsonString.EndsWith("```"))
+                {
+                    jsonString = jsonString.Substring(0, jsonString.Length - 3);
+                }
+            }
+            
+            var doc = JsonDocument.Parse(jsonString.Trim());
+            if (doc.RootElement.TryGetProperty("collections", out var collectionsElement) && collectionsElement.ValueKind == JsonValueKind.Array)
+            {
+                var list = new List<string>();
+                foreach (var item in collectionsElement.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        list.Add(item.GetString() ?? "");
+                    }
+                }
+                return list;
+            }
+            
+            return new List<string> { "tables", "stored_procedures" }; // fallback
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to parse routing JSON: {Text}", assistantReply.Text);
+            return new List<string> { "tables", "stored_procedures" }; // fallback
+        }
     }
 
     private async Task<IReadOnlyList<SchemaSearchResult>> RetrieveRelevantSchemaAsync(
