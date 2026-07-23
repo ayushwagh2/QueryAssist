@@ -3,7 +3,7 @@
 <Project>
   <PropertyGroup>
     <_PublishTargetUrl>C:\Projects\QueryAssist\bin\Release\net10.0\publish\</_PublishTargetUrl>
-    <History>True|2026-07-06T10:17:09.3275454Z||;True|2026-07-03T14:49:16.8526774+05:30||;True|2026-07-03T13:07:26.5389395+05:30||;True|2026-07-02T17:49:45.8420902+05:30||;</History>
+    <History>True|2026-07-23T10:07:56.8105701Z||;True|2026-07-23T15:15:54.3783751+05:30||;False|2026-07-23T15:14:45.5700784+05:30||;True|2026-07-17T17:15:57.4435030+05:30||;True|2026-07-17T15:08:58.9317818+05:30||;True|2026-07-06T15:47:09.3275454+05:30||;True|2026-07-03T14:49:16.8526774+05:30||;True|2026-07-03T13:07:26.5389395+05:30||;True|2026-07-02T17:49:45.8420902+05:30||;</History>
     <LastFailureDetails />
   </PropertyGroup>
 </Project>

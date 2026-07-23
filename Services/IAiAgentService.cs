@@ -8,4 +8,5 @@ public interface IAiAgentService
     Task<string> ExplainStoredProcedureAsync(string spName, string spText, CancellationToken cancellationToken = default);
     Task<string> ExplainTableAsync(string tableName, string tableText, CancellationToken cancellationToken = default);
     Task<List<string>> DetermineKnowledgeSourcesAsync(string question, CancellationToken cancellationToken = default);
+    Task<string> AnalyzeSpWithUsageAsync(string spText, int usageLevel, string relevantSchema, string extractedFilters, CancellationToken cancellationToken = default);
 }

@@ -4,6 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QueryAssist AI Tester</title>
+    <!-- Modern Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Highlight.js for Syntax Highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-light.min.css">
+    
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -18,19 +26,13 @@
                 <label for="apiSelect">Select API Endpoint:</label>
                 <select id="apiSelect">
                     <optgroup label="Semantic Explanation">
-                        <option value="explain-sp">POST /explain-sp</option>
-                        <option value="explain-table">POST /explain-table</option>
+                        <option value="explain-sp">POST /dontuse</option>
+                        <option value="explain-table">POST /testing-table</option>
                     </optgroup>
                     <optgroup label="General AI Querying">
-                        <option value="route-question">POST /route-question</option>
-                        <option value="ask">POST /ask</option>
-                        <option value="generate-query">POST /generate-query</option>
+                        <option value="analyze-sp">POST /analyze-sp</option>
                     </optgroup>
                     <optgroup label="Queue Embeddings (Background)">
-                        <option value="queue-sps">POST /queue-sps</option>
-                        <option value="queue-tables">POST /queue-tables</option>
-                        <option value="queue-relationships">POST /queue-relationships</option>
-                        <option value="queue-functions">POST /queue-functions</option>
                     </optgroup>
                 </select>
             </div>
@@ -47,6 +49,15 @@
                 <textarea id="jsonInput" rows="10" placeholder='{"tables": [...]}'></textarea>
             </div>
 
+            <!-- Inputs for Analyze SP -->
+            <div id="analyzeSpContainer" class="input-container hidden">
+                <label for="spTextInput">Stored Procedure Text:</label>
+                <textarea id="spTextInput" rows="8" placeholder="CREATE PROCEDURE..."></textarea>
+                
+                <label for="usageLevelInput" style="margin-top: 10px; display: block;">Usage Level (1-100/min):</label>
+                <input type="number" id="usageLevelInput" min="1" max="100" value="50" />
+            </div>
+
             <button id="submitBtn">Send Request</button>
 
             <div id="loading" class="hidden">
@@ -56,13 +67,16 @@
 
             <div id="results" class="hidden">
                 <h2>Response:</h2>
-                <pre id="responseJson"></pre>
+                <div id="responseContent" class="response-box"></div>
             </div>
 
             <div id="error" class="hidden error-box"></div>
         </main>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/sql.min.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

@@ -33,6 +33,7 @@ public sealed class QueryController : ControllerBase
                 "POST /ask",
                 "POST /queue-sps",
                 "POST /explain-sp",
+                "POST /analyze-sp",
                 "POST /queue-tables",
                 "POST /queue-functions",
                 "POST /explain-table",
@@ -452,5 +453,85 @@ public sealed class QueryController : ControllerBase
         var collections = await _aiAgentService.DetermineKnowledgeSourcesAsync(request.Question, cancellationToken);
 
         return Ok(new RouteQuestionResponse { Collections = collections });
+    }
+
+    [HttpPost("analyze-sp")]
+    [ProducesResponseType(typeof(AnalyzeSpResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> AnalyzeSp(
+        [FromBody] AnalyzeSpRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.SpText))
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["SpText"] = ["The SpText field is required."]
+            }));
+        }
+
+        if (request.UsageLevel < 1 || request.UsageLevel > 100)
+        {
+            return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                ["UsageLevel"] = ["The UsageLevel must be between 1 and 100 per minute."]
+            }));
+        }
+
+        _logger.LogInformation("Received analyze-sp request with usage level {UsageLevel}", request.UsageLevel);
+
+        // 1. Extract tables and filters
+        var parsed = QueryAssist.Utilities.SpParser.Parse(request.SpText);
+        var tables = parsed.Tables;
+        var filters = parsed.Filters;
+
+        // 2. Retrieve relevant schema
+        var relevantSchema = new System.Text.Json.Nodes.JsonArray();
+        var filePath = "Indexes_with_Tables.json";
+        if (System.IO.File.Exists(filePath))
+        {
+            try
+            {
+                var jsonText = await System.IO.File.ReadAllTextAsync(filePath, cancellationToken);
+                var doc = System.Text.Json.Nodes.JsonNode.Parse(jsonText);
+                if (doc != null && doc["DatabaseSchema"] is System.Text.Json.Nodes.JsonArray dbSchema)
+                {
+                    foreach (var tableNode in dbSchema)
+                    {
+                        if (tableNode != null)
+                        {
+                            var tableName = tableNode["TableName"]?.GetValue<string>();
+                            if (!string.IsNullOrWhiteSpace(tableName) && 
+                                tables.Any(t => t.EndsWith(tableName, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                relevantSchema.Add(System.Text.Json.Nodes.JsonNode.Parse(tableNode.ToJsonString()));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to read or parse Indexes_with_Tables.json");
+            }
+        }
+
+        string schemaContext = relevantSchema.ToJsonString();
+        string filtersContext = string.Join(Environment.NewLine, filters);
+
+        // 3. LLM Analysis
+        var analysis = await _aiAgentService.AnalyzeSpWithUsageAsync(
+            request.SpText, 
+            request.UsageLevel, 
+            schemaContext, 
+            filtersContext, 
+            cancellationToken);
+
+        return Ok(new AnalyzeSpResponse
+        {
+            Analysis = analysis,
+            ExtractedTables = tables,
+            ExtractedFilters = filters
+        });
     }
 }

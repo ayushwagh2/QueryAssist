@@ -5,18 +5,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const textInputLabel = document.getElementById('textInputLabel');
     const questionInput = document.getElementById('questionInput');
     const jsonInput = document.getElementById('jsonInput');
+    const analyzeSpContainer = document.getElementById('analyzeSpContainer');
+    const spTextInput = document.getElementById('spTextInput');
+    const usageLevelInput = document.getElementById('usageLevelInput');
     const submitBtn = document.getElementById('submitBtn');
     
     const loadingDiv = document.getElementById('loading');
     const resultsDiv = document.getElementById('results');
-    const responseJsonPre = document.getElementById('responseJson');
+    const responseContent = document.getElementById('responseContent');
     const errorDiv = document.getElementById('error');
 
     // Handle dropdown changes to show/hide relevant inputs
     apiSelect.addEventListener('change', () => {
         const val = apiSelect.value;
+        textInputContainer.classList.add('hidden');
+        jsonInputContainer.classList.add('hidden');
+        analyzeSpContainer.classList.add('hidden');
+
         if (val.startsWith('queue-')) {
-            textInputContainer.classList.add('hidden');
             jsonInputContainer.classList.remove('hidden');
             
             // Helpful placeholder
@@ -29,6 +35,8 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (val === 'queue-functions') {
                 jsonInput.placeholder = '{"functions": [...]}';
             }
+        } else if (val === 'analyze-sp') {
+            analyzeSpContainer.classList.remove('hidden');
         } else {
             textInputContainer.classList.remove('hidden');
             jsonInputContainer.classList.add('hidden');
@@ -66,6 +74,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 showError("Invalid JSON: " + e.message);
                 return;
             }
+        } else if (apiSelect.value === 'analyze-sp') {
+            const spText = spTextInput.value.trim();
+            if (!spText) {
+                showError("Please enter the Stored Procedure text.");
+                return;
+            }
+            const usageLevel = parseInt(usageLevelInput.value, 10) || 50;
+            payload = { spText: spText, usageLevel: usageLevel };
         } else {
             const textVal = questionInput.value.trim();
             if (!textVal) {
@@ -110,7 +126,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`[${response.status}] ${errorMsg}`);
             }
 
-            responseJsonPre.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+            // Configure marked with highlight.js if available
+            if (typeof marked !== 'undefined' && typeof hljs !== 'undefined') {
+                marked.setOptions({
+                    highlight: function(code, lang) {
+                        const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+                        return hljs.highlight(code, { language }).value;
+                    },
+                    langPrefix: 'hljs language-'
+                });
+            }
+
+            // Helper to preprocess single backtick `sql ...` to triple backtick ```sql ... ```
+            function preprocessMarkdown(text) {
+                if (!text) return text;
+                return text.replace(/`sql\s+([^`]+)`/g, "```sql\n$1\n```");
+            }
+
+            if (data && data.analysis) {
+                let markdownText = preprocessMarkdown(data.analysis);
+                let html = typeof marked !== 'undefined' ? marked.parse(markdownText) : `<pre>${markdownText}</pre>`;
+                
+                if (data.extractedTables && data.extractedTables.length > 0) {
+                    html += `<h3>Extracted Tables</h3><ul>` + data.extractedTables.map(t => `<li><code>${t}</code></li>`).join('') + `</ul>`;
+                }
+                
+                if (data.extractedFilters && data.extractedFilters.length > 0) {
+                    html += `<h3>Extracted Filters</h3><pre><code class="hljs language-sql">` + data.extractedFilters.join('\n') + `</code></pre>`;
+                }
+                
+                responseContent.innerHTML = html;
+            } else if (data && data.explanation) {
+                let markdownText = preprocessMarkdown(data.explanation);
+                let html = typeof marked !== 'undefined' ? marked.parse(markdownText) : `<pre>${markdownText}</pre>`;
+                responseContent.innerHTML = html;
+            } else {
+                const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+                responseContent.innerHTML = `<pre>${text}</pre>`;
+            }
 
             hideAll();
             resultsDiv.classList.remove('hidden');

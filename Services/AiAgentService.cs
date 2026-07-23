@@ -130,6 +130,19 @@ public sealed class AiAgentService : IAiAgentService
         }
         """;
 
+    private const string AnalyzeSpSystemPrompt = """
+        You are an expert database performance analyzer.
+
+        You will be given the text of a Stored Procedure, the relevant database schema (including indexes), and the expected usage level (executions per minute).
+        Your job is to read the SP, understand its logic, and provide optimization recommendations or performance analysis based on the schema and expected usage load.
+
+        Rules:
+        * Focus on index utilization (seek vs scan).
+        * Mention missing indexes if relevant.
+        * Consider the impact of the usage level.
+        * Return a clear, well-structured explanation.
+        """;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
@@ -525,6 +538,39 @@ public sealed class AiAgentService : IAiAgentService
         }
     }
 
+    public async Task<string> AnalyzeSpWithUsageAsync(string spText, int usageLevel, string relevantSchema, string extractedFilters, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            throw new InvalidOperationException("Gemini:ApiKey is not configured.");
+        }
+
+        _logger.LogInformation("Analyzing SP with usage level {UsageLevel}", usageLevel);
+
+        var contents = BuildAnalyzeSpConversation(spText, usageLevel, relevantSchema, extractedFilters);
+
+        using var request = CreateGenerateContentRequest(contents);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Gemini request failed with status {StatusCode}: {Body}", response.StatusCode, content);
+            throw new InvalidOperationException(
+                $"Gemini request failed with status {(int)response.StatusCode} ({response.StatusCode}). Response: {content}");
+        }
+
+        var assistantReply = ParseAssistantReply(content);
+        var finalAnswer = SanitizeExplanation(assistantReply.Text);
+
+        if (string.IsNullOrWhiteSpace(finalAnswer))
+        {
+            throw new InvalidOperationException("The Gemini response did not include an analysis.");
+        }
+
+        return finalAnswer;
+    }
+
     private async Task<IReadOnlyList<SchemaSearchResult>> RetrieveRelevantSchemaAsync(
         string question,
         CancellationToken cancellationToken)
@@ -610,6 +656,44 @@ public sealed class AiAgentService : IAiAgentService
 
                             ```sql
                             {tableText}
+                            ```
+                            """
+                    })
+            }
+        ];
+    }
+
+    private List<JsonObject> BuildAnalyzeSpConversation(
+        string spText,
+        int usageLevel,
+        string relevantSchema,
+        string extractedFilters)
+    {
+        return
+        [
+            new JsonObject
+            {
+                ["role"] = "user",
+                ["parts"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["text"] = $"""
+                            {AnalyzeSpSystemPrompt}
+
+                            ## Usage Level
+                            {usageLevel} executions per minute.
+
+                            ## Relevant Schema
+                            ```json
+                            {relevantSchema}
+                            ```
+
+                            ## Extracted Filters
+                            {extractedFilters}
+
+                            ## Stored Procedure
+                            ```sql
+                            {spText}
                             ```
                             """
                     })
