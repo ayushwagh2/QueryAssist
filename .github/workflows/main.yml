@@ -25,12 +25,6 @@ jobs:
       - name: Publish Application
         run: dotnet publish --configuration Release --output ./publish --no-build
 
-      - name: Show Current Directory
-        shell: pwsh
-        run: |
-          Get-Location
-          Get-ChildItem
-
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
