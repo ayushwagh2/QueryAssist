@@ -2,7 +2,7 @@ using QueryAssist.Services;
 using QueryAssist.Options;
 
 var builder = WebApplication.CreateBuilder(args);
-
+//this changes are there to test if my PIPE is working
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddProblemDetails();
